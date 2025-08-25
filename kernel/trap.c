@@ -67,6 +67,31 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+    // --- 主要修改开始：在判断完是设备中断后，专门处理时钟中断 ---
+    if (which_dev == 2) { // 如果是时钟中断
+      if (p->alarm_interval != 0) { // 如果当前进程设置了警报
+        // 1. 减少剩余时间
+        p->alarm_ticks--;
+        // 2. 检查是否到达了设定的间隔
+        //    并且确保之前没有正在处理的警报（防止重入）
+        if (p->alarm_ticks <= 0 && !(p->alarm_goingoff)) {
+          // 重置计时器，为下一次警报做准备
+          p->alarm_ticks = p->alarm_interval;
+          // 设置标志位，表示我们已经进入处理程序，防止再次进入
+          p->alarm_goingoff = 1;
+
+          // --- 最关键的一步：安排执行用户处理程序 ---
+          // 保存当前的trapframe到alarm_trapframe（现在是结构体实例）
+          p->alarm_trapframe = *(p->trapframe);  // 直接赋值
+
+          // 修改trapframe中的程序计数器(epc)，
+          // 让中断返回时不是回到原来的用户代码，而是跳到处理程序函数
+          p->trapframe->epc = (uint64)p->alarm_handler;
+        }
+      }
+      // 原来的yield()调用保留，时钟中断仍然需要让出CPU
+      yield();
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -76,9 +101,6 @@ usertrap(void)
   if(p->killed)
     exit(-1);
 
-  // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
 
   usertrapret();
 }

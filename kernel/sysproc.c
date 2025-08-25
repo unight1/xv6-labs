@@ -57,6 +57,8 @@ sys_sleep(void)
 {
   int n;
   uint ticks0;
+  
+  backtrace();
 
   if(argint(0, &n) < 0)
     return -1;
@@ -81,6 +83,57 @@ sys_kill(void)
   if(argint(0, &pid) < 0)
     return -1;
   return kill(pid);
+}
+
+uint64
+sys_sigalarm(void)
+{
+  int interval;
+  uint64 handler_addr;
+
+  if(argint(0, &interval) < 0 || argaddr(1, &handler_addr) < 0) {
+    return -1;
+  }
+
+  struct proc *p = myproc();
+  // Acquire the process lock to protect concurrent access
+  acquire(&p->lock);
+
+  p->alarm_interval = interval;
+  p->alarm_handler = (void (*)())handler_addr;
+  // Reset the tick counter. Next alarm is in 'interval' ticks.
+  p->alarm_ticks = interval;
+
+  release(&p->lock);
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  acquire(&p->lock);
+
+  // Check if we are actually in an alarm handler
+  if(p->alarm_goingoff == 0) {
+    release(&p->lock);
+    return -1;
+  }
+
+  // Restore the original saved trapframe
+  // This copies the entire saved state back to the current trapframe
+  *p->trapframe = p->alarm_trapframe;
+
+  // Mark that we are no longer in the alarm handler
+  p->alarm_goingoff = 0;
+
+  // Reset the tick counter for the next alarm
+  if(p->alarm_interval > 0) {
+    p->alarm_ticks = p->alarm_interval;
+  }
+
+  release(&p->lock);
+  return 0; // Returns to the restored user code
 }
 
 // return how many clock tick interrupts have occurred

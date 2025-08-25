@@ -33,6 +33,8 @@ entry("mkdir");
 entry("chdir");
 entry("dup");
 entry("getpid");
+entry("sigalarm");
+entry("sigreturn");
 entry("sbrk");
 entry("sleep");
 entry("uptime");

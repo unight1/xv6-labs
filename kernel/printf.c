@@ -121,9 +121,44 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  
+  backtrace();
+  
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
+}
+
+void
+backtrace()
+{
+  // Get the current frame pointer
+  uint64 fp = r_fp();
+  // Calculate the top of the current stack page
+  // PGROUNDUP is used because the stack grows down.
+  // The frame pointer should be within the current stack page.
+  uint64 stacktop = PGROUNDUP(fp);
+
+  printf("backtrace:\n");
+
+  // Walk up the stack frames until we reach the top of the stack page
+  // or the frame pointer becomes invalid (e.g., 0)
+  while(fp < stacktop)
+  {
+    // The return address is stored at fp - 8
+    uint64 ra = *(uint64*)(fp - 8);
+    printf("%p\n", ra);
+
+    // The previous frame pointer is stored at fp - 16
+    uint64 prev_fp = *(uint64*)(fp - 16);
+    
+    // Check if the previous frame pointer is valid (must be greater than current fp)
+    // If not, break out of the loop to avoid infinite loop or errors.
+    if(prev_fp <= fp) {
+      break;
+    }
+    fp = prev_fp;
+  }
 }
 
 void
