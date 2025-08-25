@@ -95,35 +95,94 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(struct mbuf *m)
 {
-  //
-  // Your code here.
-  //
-  // the mbuf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after sending.
-  //
+  acquire(&e1000_lock);
   
+  uint32 index = regs[E1000_TDT];
+  struct tx_desc *desc = &tx_ring[index];
+  
+  // 检查描述符是否可用
+  if (!(desc->status & E1000_TXD_STAT_DD)) {
+    release(&e1000_lock);
+    return -1;
+  }
+  
+  // 释放之前可能存在的mbuf
+  if (tx_mbufs[index]) {
+    mbuffree(tx_mbufs[index]);
+  }
+  
+  // 设置描述符
+  desc->addr = (uint64)m->head;
+  desc->length = m->len;
+  desc->cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  desc->status = 0;
+  
+  // 保存mbuf指针
+  tx_mbufs[index] = m;
+  
+  // 确保更新操作对硬件可见
+  __sync_synchronize();
+  
+  // 更新TX环尾指针
+  regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
+  
+  release(&e1000_lock);
   return 0;
 }
+
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver an mbuf for each packet (using net_rx()).
-  //
+  // 注意：这个函数在中断上下文中被调用
+  // 可能需要特殊处理锁
+  
+  uint32 index;
+  struct rx_desc *desc;
+  
+  // 使用循环处理所有可用的数据包
+  while (1) {
+    // 获取当前RDT并计算下一个索引
+    index = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    desc = &rx_ring[index];
+    
+    // 检查是否有新数据包
+    if (!(desc->status & E1000_RXD_STAT_DD)) {
+      break;
+    }
+    
+    // 获取mbuf
+    struct mbuf *m = rx_mbufs[index];
+    m->len = desc->length;
+    
+    // 在释放锁之前传递数据包给网络栈
+    // 注意：net_rx可能会需要锁，所以这里先释放锁
+    release(&e1000_lock);
+    net_rx(m);
+    acquire(&e1000_lock);
+    
+    // 分配新的mbuf
+    if ((rx_mbufs[index] = mbufalloc(0)) == 0) {
+      panic("e1000_recv: no mbuf available");
+    }
+    
+    // 设置新描述符
+    desc->addr = (uint64)rx_mbufs[index]->head;
+    desc->status = 0;
+    
+    // 更新RDT
+    regs[E1000_RDT] = index;
+  }
 }
 
 void
 e1000_intr(void)
 {
-  // tell the e1000 we've seen this interrupt;
-  // without this the e1000 won't raise any
-  // further interrupts.
-  regs[E1000_ICR] = 0xffffffff;
-
+  // 在中断处理中获取锁
+  acquire(&e1000_lock);
   e1000_recv();
+  release(&e1000_lock);
+  
+  // 确认中断
+  regs[E1000_ICR] = 0xffffffff;
 }
