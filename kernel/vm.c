@@ -5,6 +5,8 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
 
 /*
  * the kernel's page table.
@@ -303,29 +305,44 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
+  // char *mem;
 
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
+  for (i = 0; i < sz; i += PGSIZE)
+  {
+    if ((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
+    if ((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    // 页面设置不可写，并标记为COW页(多个进程引用了该页面)
+    if (*pte & PTE_W)
+    {
+      *pte = (*pte & ~PTE_W) | PTE_COW;
+    }
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // 将子进程的页面直接指向父进程
+    if (mappages(new, i, PGSIZE, (uint64)pa, flags) != 0)
+    {
       goto err;
     }
+    // 页面引用次数加一
+    krefpage((void *)pa);
+
+    // if((mem = kalloc()) == 0)
+    //   goto err;
+    // memmove(mem, (char*)pa, PGSIZE);
+    // if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    //   kfree(mem);
+    //   goto err;
+    // }
   }
   return 0;
 
- err:
+err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
+
 
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
@@ -348,13 +365,16 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
 
-  while(len > 0){
+  while (len > 0)
+  {
+    if (uvmcheckcowpage(dstva))
+      uvmcowcopy(dstva);
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if (pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
-    if(n > len)
+    if (n > len)
       n = len;
     memmove((void *)(pa0 + (dstva - va0)), src, n);
 
@@ -432,3 +452,36 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+// check if a page is a COW page
+int uvmcheckcowpage(uint64 va)
+{
+  pte_t *pte;
+  struct proc *p = myproc();
+  return va < p->sz && ((pte = walk(p->pagetable, va, 0)) != 0) && (*pte & PTE_V) && (*pte & PTE_COW);
+}
+
+// copy a COW page , make it writable
+int uvmcowcopy(uint64 va)
+{
+  pte_t *pte;
+  struct proc *p = myproc();
+  if ((pte = walk(p->pagetable, va, 0)) == 0)
+  {
+    panic("uvmcowcopy: pte should exist");
+  }
+
+  // call kcopy_n_deref to copy the page
+  uint64 pa = PTE2PA(*pte);
+  uint64 new = (uint64)kcopy_n_deref((void *)pa);
+  if (new == 0)
+    return -1;
+  uint64 flags = (PTE_FLAGS(*pte) | PTE_W) & ~PTE_COW;
+  uvmunmap(p->pagetable, PGROUNDDOWN(va), 1, 0);
+  if (mappages(p->pagetable, va, 1, new, flags) == -1)
+  {
+    panic("uvmcowcopy: mappages failed");
+  }
+  return 0;
+}
+

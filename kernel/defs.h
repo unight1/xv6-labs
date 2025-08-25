@@ -54,6 +54,7 @@ void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, int, uint64, uint, uint);
 void            itrunc(struct inode*);
 
+
 // ramdisk.c
 void            ramdiskinit(void);
 void            ramdiskintr(void);
@@ -63,6 +64,8 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void *kcopy_n_deref(void *pa);
+void krefpage(void *pa);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -170,6 +173,8 @@ uint64          walkaddr(pagetable_t, uint64);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
+int uvmcheckcowpage(uint64 va);
+int uvmcowcopy(uint64 va);
 
 // plic.c
 void            plicinit(void);
