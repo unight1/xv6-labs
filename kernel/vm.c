@@ -432,3 +432,33 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+void
+vmprint_level(pagetable_t pagetable, int level)
+{
+  // 页表有512个条目 (2^9)
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V){ // 如果PTE有效
+      // 打印缩进
+      for(int j = 0; j < level; j++){
+        printf(" ..");
+      }
+      // 打印PTE信息
+      printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+      
+      // 如果这不是最后一级（level 0），递归打印
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        uint64 child = PTE2PA(pte);
+        vmprint_level((pagetable_t)child, level + 1);
+      }
+    }
+  }
+}
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprint_level(pagetable, 1);
+}

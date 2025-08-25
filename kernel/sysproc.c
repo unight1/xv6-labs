@@ -81,6 +81,44 @@ int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
+  // 解析参数
+  uint64 start_va;
+  int num_pages;
+  uint64 output_addr;
+  
+  if(argaddr(0, &start_va) < 0)
+    return -1;
+  if(argint(1, &num_pages) < 0)
+    return -1;
+  if(argaddr(2, &output_addr) < 0)
+    return -1;
+  
+  // 限制最大页数，避免缓冲区过大
+  if(num_pages > 64 || num_pages < 0)
+    return -1;
+  
+  struct proc *p = myproc();
+  uint64 bitmask = 0;
+  
+  // 检查每一页的访问位
+  for(int i = 0; i < num_pages; i++){
+    uint64 va = start_va + i * PGSIZE;
+    
+    // 使用walk找到PTE
+    pte_t *pte = walk(p->pagetable, va, 0);
+    if(pte == 0)
+      continue; // 页不存在
+    
+    if(*pte & PTE_A){ // 如果访问位被设置
+      bitmask |= (1 << i); // 设置对应的位
+      *pte &= ~PTE_A; // 清除访问位
+    }
+  }
+  
+  // 将结果复制到用户空间
+  if(copyout(p->pagetable, output_addr, (char *)&bitmask, sizeof(bitmask)) < 0)
+    return -1;
+ 
   return 0;
 }
 #endif
