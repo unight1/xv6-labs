@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -300,6 +304,14 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+  
+  // 复制 VMA
+  for(i = 0; i < NVMA; i++) {
+    if(p->vmas[i].used) {
+      np->vmas[i] = p->vmas[i];
+      filedup(np->vmas[i].file);  // 增加文件引用计数
+    }
+  }
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -340,6 +352,61 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  
+  // 解除所有 mmap 映射
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vmas[i].used) {
+      // 模拟 munmap 整个区域
+      uint64 addr = p->vmas[i].addr;
+      int length = p->vmas[i].len;
+      
+      // 写回修改的页面（如果是 MAP_SHARED）
+      if(p->vmas[i].flags & MAP_SHARED) {
+    begin_op();
+    for(uint64 va = addr; va < addr + length; va += PGSIZE) {
+        pte_t *pte = walk(p->pagetable, va, 0);
+        if(pte && (*pte & PTE_V)) {
+            if(*pte & PTE_D) {  // 只写回脏页
+                char *mem = (char*)PTE2PA(*pte);
+                uint64 offset = (va - addr) + p->vmas[i].offset;
+                
+                ilock(p->vmas[i].file->ip);
+                writei(p->vmas[i].file->ip, 1, (uint64)mem, offset, PGSIZE);
+                iunlock(p->vmas[i].file->ip);
+            }
+        }
+    }
+    end_op();
+}
+      
+  for(uint64 va = addr; va < addr + length; va += PGSIZE){
+  pte_t *pte = walk(p->pagetable, va, 0);
+  if(pte == 0 || (*pte & PTE_V) == 0) {
+    continue;
+  }
+  
+  // 处理共享映射的写回
+  if((p->vmas[i].flags & MAP_SHARED) && (*pte & PTE_D)) {
+    char *mem = (char*)PTE2PA(*pte);
+    uint64 offset = (va - addr) + p->vmas[i].offset;
+    
+    begin_op();
+    ilock(p->vmas[i].file->ip);
+    writei(p->vmas[i].file->ip, 1, (uint64)mem, offset, PGSIZE);
+    iunlock(p->vmas[i].file->ip);
+    end_op();
+  }
+  
+  uint64 pa = PTE2PA(*pte);
+  kfree((void*)pa);
+  *pte = 0;
+}
+      
+      // 释放文件引用
+      fileclose(p->vmas[i].file);
+      p->vmas[i].used = 0;
+    }
+  }
 
   if(p == initproc)
     panic("init exiting");

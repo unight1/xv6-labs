@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -15,6 +19,59 @@ extern char trampoline[], uservec[], userret[];
 void kernelvec();
 
 extern int devintr();
+
+
+
+int
+handle_mmap_fault(struct proc *p, uint64 va)
+{
+  // 查找对应的 VMA
+  struct vma *vma = 0;
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vmas[i].used && va >= p->vmas[i].addr && 
+       va < p->vmas[i].addr + p->vmas[i].len) {
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+  
+  if(vma == 0) {
+    return -1;  // 不在任何 VMA 中
+  }
+  
+  // 分配物理页
+  char *mem = kalloc();
+  if(mem == 0) {
+    return -1;
+  }
+  memset(mem, 0, PGSIZE);
+  
+  // 计算文件偏移
+  uint64 offset = (va - vma->addr) + vma->offset;
+  
+  // 从文件读取数据
+  begin_op();
+  ilock(vma->file->ip);
+  readi(vma->file->ip, 0, (uint64)mem, offset, PGSIZE);
+  iunlock(vma->file->ip);
+  end_op();
+  
+  // 设置 PTE 权限
+  int perm = PTE_U;
+  if(vma->prot & PROT_READ) perm |= PTE_R;
+  if(vma->prot & PROT_WRITE) perm |= PTE_W;
+  if(vma->prot & PROT_EXEC) perm |= PTE_X;
+  
+  // 映射到用户页表
+  if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, 
+              (uint64)mem, perm) < 0) {
+    kfree(mem);
+    return -1;
+  }
+  
+  return 0;
+}
+
 
 void
 trapinit(void)
@@ -67,6 +124,17 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 13 || r_scause() == 15) {
+    // 处理页错误 (13=load, 15=store)
+    uint64 va = r_stval();
+    
+    if(va >= p->sz) {
+      // 超出进程大小
+      p->killed = 1;
+    } else if(handle_mmap_fault(p, va) < 0) {
+      // 处理 mmap 页错误
+      p->killed = 1;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());

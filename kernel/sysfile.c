@@ -484,3 +484,164 @@ sys_pipe(void)
   }
   return 0;
 }
+
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length, prot, flags, fd;
+  struct file *file;
+  
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0 || 
+     argint(2, &prot) < 0 || argint(3, &flags) < 0 ||
+     argint(4, &fd) < 0) {
+    return -1;
+  }
+  
+  if(addr != 0) {
+    // 本实验假设 addr 总是 0
+    return -1;
+  }
+  
+  if(fd < 0 || fd >= NOFILE || (file = myproc()->ofile[fd]) == 0) {
+    return -1;
+  }
+  
+  // 检查文件是否可读/可写
+  if((prot & PROT_READ) && !file->readable)
+    return -1;
+  if((prot & PROT_WRITE) && !file->writable && !(flags & MAP_PRIVATE))
+    return -1;
+  
+  struct proc *p = myproc();
+  uint64 va = p->sz;  // 在进程地址空间末尾分配
+  
+  // 确保不会覆盖现有代码段
+if(va < 0x4000) {
+    va = 0x4000;  // 确保至少从代码段之后开始
+}
+  
+  // 寻找空闲的 VMA
+  struct vma *vma = 0;
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vmas[i].used == 0) {
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+  
+  if(vma == 0) {
+    return -1;
+  }
+  
+  // 填充 VMA
+  vma->used = 1;
+  vma->addr = va;
+  vma->len = length;
+  vma->prot = prot;
+  vma->flags = flags;
+  vma->file = filedup(file);  // 增加文件引用计数
+  vma->offset = 0;
+  
+  // 增长进程大小（但不实际分配物理内存）
+  p->sz = va + length;
+  
+  return va;
+}
+
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  int length;
+  
+  if(argaddr(0, &addr) < 0 || argint(1, &length) < 0) {
+    return -1;
+  }
+  
+  struct proc *p = myproc();
+  struct vma *vma = 0;
+  
+  // 查找包含该地址范围的 VMA
+  for(int i = 0; i < NVMA; i++) {
+    if(p->vmas[i].used && addr >= p->vmas[i].addr && 
+       addr < p->vmas[i].addr + p->vmas[i].len) {
+      vma = &p->vmas[i];
+      break;
+    }
+  }
+  
+  if(vma == 0) {
+    return -1;
+  }
+  
+  // 检查是否在开头或结尾解除映射
+  if(addr != vma->addr && addr + length != vma->addr + vma->len) {
+    return -1;  // 不支持在中间挖洞
+  }
+  
+  // 写回修改的页面（如果是 MAP_SHARED）
+  if(vma->flags & MAP_SHARED) {
+    begin_op();
+    for(uint64 va = addr; va < addr + length; va += PGSIZE) {
+        pte_t *pte = walk(p->pagetable, va, 0);
+        if(pte && (*pte & PTE_V)) {
+            // 检查页面是否被修改过（脏页）
+            if(*pte & PTE_D) {
+                char *mem = (char*)PTE2PA(*pte);
+                uint64 offset = (va - vma->addr) + vma->offset;
+                
+                ilock(vma->file->ip);
+                writei(vma->file->ip, 1, (uint64)mem, offset, PGSIZE);
+                iunlock(vma->file->ip);
+            }
+        }
+    }
+    end_op();
+}
+  
+  for(uint64 va = addr; va < addr + length; va += PGSIZE){
+  pte_t *pte = walk(p->pagetable, va, 0);
+  if(pte == 0 || (*pte & PTE_V) == 0) {
+    continue; // 页面未映射，跳过
+  }
+  
+  // 如果是共享映射且页面被修改，写回文件
+  if((vma->flags & MAP_SHARED) && (*pte & PTE_D)) {
+    char *mem = (char*)PTE2PA(*pte);
+    uint64 offset = (va - vma->addr) + vma->offset;
+    
+    begin_op();
+    ilock(vma->file->ip);
+    writei(vma->file->ip, 1, (uint64)mem, offset, PGSIZE);
+    iunlock(vma->file->ip);
+    end_op();
+  }
+  
+  // 解除单个页面映射
+  uint64 pa = PTE2PA(*pte);
+  kfree((void*)pa);
+  *pte = 0;
+}
+  
+  // 更新 VMA
+  if(addr == vma->addr) {
+    // 从开头解除映射
+    vma->addr += length;
+    vma->len -= length;
+    vma->offset += length;
+  } else {
+    // 从结尾解除映射
+    vma->len -= length;
+  }
+  
+  // 如果整个区域都被解除映射，释放 VMA
+  if(vma->len <= 0) {
+    fileclose(vma->file);
+    vma->used = 0;
+  }
+  
+  return 0;
+}

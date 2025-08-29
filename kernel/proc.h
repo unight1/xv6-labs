@@ -1,4 +1,16 @@
+#define NVMA 16
 // Saved registers for kernel context switches.
+
+struct vma {
+  int used;           // 是否使用
+  uint64 addr;        // 起始虚拟地址
+  int len;            // 长度
+  int prot;           // 权限 PROT_READ/PROT_WRITE
+  int flags;          // MAP_SHARED/MAP_PRIVATE
+  struct file *file;  // 映射的文件
+  int offset;         // 文件偏移（本实验为0）
+};
+
 struct context {
   uint64 ra;
   uint64 sp;
@@ -85,6 +97,8 @@ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 // Per-process state
 struct proc {
   struct spinlock lock;
+  
+  struct vma vmas[NVMA];  // 虚拟内存区域数组
 
   // p->lock must be held when using these:
   enum procstate state;        // Process state
