@@ -106,7 +106,7 @@ kalloc(void)
   } else {
     release(&kmem[cpu].lock);
     
-    // 简化版：从其他CPU偷取一个页面
+    // 从其他CPU偷取一个页面
     for (int i = 0; i < NCPU; i++) {
       if (i == cpu) continue;
       
